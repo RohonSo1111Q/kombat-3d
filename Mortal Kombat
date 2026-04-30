@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kombat 3D - Patched Mobile</title>
+    <style>
+        /* Added rules to prevent zooming, highlighting, and context menus on mobile */
+        body { margin: 0; overflow: hidden; background-color: #111; touch-action: none; font-family: sans-serif; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+        
+        #ui { position: absolute; top: 0; width: 100%; display: flex; justify-content: space-between; padding: 20px; box-sizing: border-box; z-index: 10; pointer-events: none; }
+        .health-bar-container { width: 40%; height: 25px; background: #333; border: 2px solid white; box-shadow: 0 0 10px rgba(0,0,0,0.8); }
+        #p1-health { background: linear-gradient(90deg, #ff0000, #ff6600); height: 100%; width: 100%; transition: width 0.1s; }
+        #cpu-health { background: linear-gradient(90deg, #0000ff, #00aaff); height: 100%; width: 100%; transition: width 0.1s; float: right; }
+
+        #controls-layer { position: absolute; bottom: 20px; width: 100%; height: 150px; display: flex; justify-content: space-between; padding: 0 20px; box-sizing: border-box; z-index: 20; }
+        
+        #joystick-base { width: 120px; height: 120px; background: rgba(255, 255, 255, 0.2); border-radius: 50%; position: relative; border: 2px solid rgba(255,255,255,0.5); align-self: flex-end; touch-action: none; }
+        #joystick-stick { width: 50px; height: 50px; background: rgba(255, 255, 255, 0.8); border-radius: 50%; position: absolute; top: 35px; left: 35px; pointer-events: none; }
+
+        #action-buttons { display: flex; gap: 15px; align-self: flex-end; flex-wrap: wrap; width: 160px; justify-content: flex-end; touch-action: none; }
+        .action-btn { width: 60px; height: 60px; background: rgba(255, 255, 255, 0.2); border: 2px solid rgba(255,255,255,0.5); border-radius: 50%; color: white; font-weight: bold; font-size: 14px; display: flex; justify-content: center; align-items: center; touch-action: none; }
+        .action-btn:active { background: rgba(255, 255, 255, 0.6); }
+        #btn-special { background: rgba(255, 215, 0, 0.3); border-color: gold; color: gold; width: 70px; height: 70px; } 
+        #btn-special:active { background: rgba(255, 215, 0, 0.8); color: black; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body oncontextmenu="return false;"> <div id="ui">
+    <div class="health-bar-container"><div id="p1-health"></div></div>
+    <div class="health-bar-container"><div id="cpu-health"></div></div>
+</div>
+
+<div id="controls-layer">
+    <div id="joystick-base">
+        <div id="joystick-stick"></div>
+    </div>
+    <div id="action-buttons">
+        <div class="action-btn" id="btn-punch">PUNCH</div>
+        <div class="action-btn" id="btn-kick">KICK</div>
+        <div class="action-btn" id="btn-special">SPECIAL</div>
+    </div>
+</div>
+
+<script>
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 4, 12);
+    
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5, 10, 5);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    const floorGeo = new THREE.PlaneGeometry(40, 20);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x333344 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    let projectiles = [];
+
+    class Fighter3D {
+        constructor(x, color, isCPU) {
+            this.isCPU = isCPU;
+            this.health = 100;
+            this.yVelocity = 0;
+            this.facingRight = !isCPU;
+            this.specialCooldown = 0; // Added cooldown to stop spam
+            
+            this.group = new THREE.Group();
+            this.group.position.set(x, 0, 0);
+            scene.add(this.group);
+
+            const bodyGeo = new THREE.BoxGeometry(1, 1.5, 1);
+            const mat = new THREE.MeshStandardMaterial({ color: color });
+            this.body = new THREE.Mesh(bodyGeo, mat);
+            this.body.position.y = 0.75;
+            this.body.castShadow = true;
+            this.group.add(this.body);
+
+            const headGeo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+            this.head = new THREE.Mesh(headGeo, mat);
+            this.head.position.y = 1.8;
+            this.head.castShadow = true;
+            this.group.add(this.head);
+
+            const weaponGeo = new THREE.BoxGeometry(0.2, 1.8, 0.2);
+            const weaponMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.8 });
+            this.weapon = new THREE.Mesh(weaponGeo, weaponMat);
+            this.weapon.position.set(0.6, 1, 0); 
+            this.weapon.castShadow = true;
+            this.group.add(this.weapon);
+
+            this.hitbox = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xffff00, wireframe: true }));
+            this.hitbox.visible = false;
+            this.group.add(this.hitbox);
+
+            this.attackState = 0; 
+            this.attackTimer = 0;
+            this.hasHit = false;
+        }
+
+        update() {
+            this.group.position.y += this.yVelocity;
+            if (this.group.position.y <= 0) {
+                this.group.position.y = 0;
+                this.yVelocity = 0;
+            } else {
+                this.yVelocity -= 0.02;
+            }
+
+            this.weapon.position.x = this.facingRight ? 0.6 : -0.6;
+
+            if (this.attackTimer > 0) {
+                this.attackTimer--;
+                if (this.attackTimer === 0) {
+                    this.attackState = 0;
+                    this.hitbox.visible = false;
+                    this.weapon.rotation.z = 0; 
+                }
+            }
+            if (this.specialCooldown > 0) this.specialCooldown--;
+        }
+
+        doAttack(type) {
+            if (this.attackState !== 0) return; 
+            
+            if (type === 'special' && this.specialCooldown > 0) return; // Prevent spam
+
+            this.hasHit = false;
+            
+            if (type === 'punch') {
+                this.attackState = 1;
+                this.attackTimer = 15;
+                this.hitbox.scale.set(1.5, 0.5, 1);
+                this.hitbox.position.set(this.facingRight ? 1 : -1, 1.2, 0);
+            } 
+            else if (type === 'kick') {
+                this.attackState = 2;
+                this.attackTimer = 25;
+                this.hitbox.scale.set(2.0, 0.5, 1); 
+                this.hitbox.position.set(this.facingRight ? 1.2 : -1.2, 0.5, 0); 
+            }
+            else if (type === 'special') {
+                this.attackTimer = 30; 
+                this.specialCooldown = 120; // 2 seconds before they can shoot again
+                this.weapon.rotation.z = this.facingRight ? -Math.PI/2 : Math.PI/2; 
+                
+                const projGeo = new THREE.SphereGeometry(0.4);
+                const projMat = new THREE.MeshBasicMaterial({ color: 0xffd700 }); 
+                const proj = new THREE.Mesh(projGeo, projMat);
+                proj.position.set(this.group.position.x + (this.facingRight ? 1 : -1), 1, 0);
+                scene.add(proj);
+                
+                projectiles.push({ mesh: proj, vx: this.facingRight ? 0.3 : -0.3, owner: this });
+                return; 
+            }
+            // this.hitbox.visible = true; // Uncomment to debug hitboxes
+        }
+    }
+
+    const player1 = new Fighter3D(-4, 0xff0000, false);
+    const cpu = new Fighter3D(4, 0x0000ff, true);
+
+    // --- FIX: ISOLATED MULTI-TOUCH CONTROLS ---
+    let joystickInput = { x: 0, y: 0 };
+    let activeJoyTouchId = null; 
+    
+    const joyBase = document.getElementById('joystick-base');
+    const joyStick = document.getElementById('joystick-stick');
+    
+    joyBase.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const touch = e.changedTouches[0];
+        activeJoyTouchId = touch.identifier;
+        moveJoystick(touch);
+    }, {passive: false});
+
+    joyBase.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        for(let i=0; i < e.changedTouches.length; i++) {
+            if(e.changedTouches[i].identifier === activeJoyTouchId) {
+                moveJoystick(e.changedTouches[i]);
+            }
+        }
+    }, {passive: false});
+
+    joyBase.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        for(let i=0; i < e.changedTouches.length; i++) {
+            if(e.changedTouches[i].identifier === activeJoyTouchId) {
+                activeJoyTouchId = null;
+                joystickInput.x = 0; joystickInput.y = 0;
+                joyStick.style.transform = `translate(0px, 0px)`; 
+            }
+        }
+    }, {passive: false});
+
+    function moveJoystick(touch) {
+        const baseRect = joyBase.getBoundingClientRect();
+        const centerX = baseRect.left + 60;
+        const centerY = baseRect.top + 60;
+        let dx = touch.clientX - centerX;
+        let dy = touch.clientY - centerY;
+        let distance = Math.sqrt(dx*dx + dy*dy);
+        
+        if (distance > 30) { 
+            dx = (dx / distance) * 30;
+            dy = (dy / distance) * 30;
+        }
+        joyStick.style.transform = `translate(${dx}px, ${dy}px)`;
+        
+        joystickInput.x = dx > 10 ? 1 : (dx < -10 ? -1 : 0);
+        joystickInput.y = dy < -20 ? 1 : 0; 
+    }
+
+    // Isolated Action Buttons
+    function bindButton(id, action) {
+        const btn = document.getElementById(id);
+        btn.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Stops double-firing and zoom
+            player1.doAttack(action);
+        }, {passive: false});
+    }
+
+    bindButton('btn-punch', 'punch');
+    bindButton('btn-kick', 'kick');
+    bindButton('btn-special', 'special');
+
+    // --- GAME ENGINE LOGIC ---
+    function checkHit(attacker, defender) {
+        if (attacker.attackState === 0 || attacker.hasHit || attacker.attackState === 3) return;
+        
+        const attackBox = new THREE.Box3().setFromObject(attacker.hitbox);
+        const defendBox = new THREE.Box3().setFromObject(defender.body);
+
+        if (attackBox.intersectsBox(defendBox)) {
+            attacker.hasHit = true;
+            defender.health -= (attacker.attackState === 1) ? 5 : 10; 
+            if (defender.health < 0) defender.health = 0;
+            
+            defender.group.position.x += attacker.facingRight ? 0.5 : -0.5;
+            
+            if (defender.isCPU) document.getElementById('cpu-health').style.width = defender.health + '%';
+            else document.getElementById('p1-health').style.width = defender.health + '%';
+        }
+    }
+
+    function updateProjectiles() {
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+            let p = projectiles[i];
+            p.mesh.position.x += p.vx;
+            
+            let target = p.owner === player1 ? cpu : player1;
+            const projBox = new THREE.Box3().setFromObject(p.mesh);
+            const targetBox = new THREE.Box3().setFromObject(target.body);
+            
+            if (projBox.intersectsBox(targetBox)) {
+                target.health -= 15; 
+                if (target.health < 0) target.health = 0;
+                target.group.position.x += p.vx > 0 ? 1 : -1;
+                
+                if (target.isCPU) document.getElementById('cpu-health').style.width = target.health + '%';
+                else document.getElementById('p1-health').style.width = target.health + '%';
+                
+                scene.remove(p.mesh);
+                projectiles.splice(i, 1);
+                continue;
+            }
+
+            if (Math.abs(p.mesh.position.x) > 20) {
+                scene.remove(p.mesh);
+                projectiles.splice(i, 1);
+            }
+        }
+    }
+
+    function runAILogic() {
+        if (cpu.health <= 0) return; // Stop if dead
+        
+        const distToPlayer = player1.group.position.x - cpu.group.position.x;
+        const absDist = Math.abs(distToPlayer);
+        cpu.facingRight = distToPlayer > 0;
+
+        if (absDist > 5) {
+            cpu.group.position.x += cpu.facingRight ? 0.04 : -0.04;
+            if (Math.random() < 0.02) cpu.doAttack('special');
+        } else if (absDist > 2) {
+            cpu.group.position.x += cpu.facingRight ? 0.04 : -0.04;
+            if (Math.random() < 0.02) cpu.doAttack('kick');
+        } else {
+            if (Math.random() < 0.05) cpu.doAttack('punch');
+            else cpu.group.position.x -= cpu.facingRight ? 0.02 : -0.02; 
+        }
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        // Allow movement only if health > 0
+        if (player1.health > 0) {
+            if (joystickInput.x === -1) { player1.group.position.x -= 0.1; player1.facingRight = false; }
+            if (joystickInput.x === 1) { player1.group.position.x += 0.1; player1.facingRight = true; }
+            if (joystickInput.y === 1 && player1.yVelocity === 0) { player1.yVelocity = 0.4; } 
+        }
+
+        player1.group.position.x = Math.max(-14, Math.min(14, player1.group.position.x));
+        cpu.group.position.x = Math.max(-14, Math.min(14, cpu.group.position.x));
+
+        player1.update();
+        cpu.update();
+        runAILogic();
+        updateProjectiles();
+
+        checkHit(player1, cpu);
+        checkHit(cpu, player1);
+
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+    });
+</script>
+</body>
+</html>
